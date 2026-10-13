@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import { registerMediaTrack } from "@/hooks/useMediaStream";
 
 export function useScreenShare() {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
@@ -19,6 +20,8 @@ export function useScreenShare() {
         video: { cursor: "always" } as any,
         audio: false,
       });
+
+      stream.getTracks().forEach(registerMediaTrack);
 
       streamRef.current = stream;
       setScreenStream(stream);

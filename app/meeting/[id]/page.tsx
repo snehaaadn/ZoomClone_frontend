@@ -4,7 +4,7 @@ import React, { useState, useEffect, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { Meeting } from "@/types";
-import { useMediaStream } from "@/hooks/useMediaStream";
+import { useMediaStream, stopAllGlobalMediaTracks } from "@/hooks/useMediaStream";
 import { useScreenShare } from "@/hooks/useScreenShare";
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { MeetingHeader } from "@/components/meeting/MeetingHeader";
@@ -136,6 +136,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const stopAllMediaTracks = useCallback(() => {
     stopLocalStream();
     stopScreenShare();
+    stopAllGlobalMediaTracks();
     if (localStream) {
       localStream.getTracks().forEach((track) => {
         try {
@@ -154,19 +155,19 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
 
   // Clean up all media tracks when exiting the meeting room
   useEffect(() => {
-    return () => {
+    const handleExit = () => {
       stopAllMediaTracks();
     };
-  }, [stopAllMediaTracks]);
 
-  // Stop tracks if browser tab is closed or reloaded
-  useEffect(() => {
-    const handleBeforeUnload = () => {
-      stopAllMediaTracks();
-    };
-    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("beforeunload", handleExit);
+    window.addEventListener("pagehide", handleExit);
+    window.addEventListener("popstate", handleExit);
+
     return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
+      handleExit();
+      window.removeEventListener("beforeunload", handleExit);
+      window.removeEventListener("pagehide", handleExit);
+      window.removeEventListener("popstate", handleExit);
     };
   }, [stopAllMediaTracks]);
 
@@ -174,14 +175,14 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const handleKicked = useCallback((reason: string) => {
     stopAllMediaTracks();
     alert(reason);
-    router.push("/");
-  }, [router, stopAllMediaTracks]);
+    window.location.href = "/";
+  }, [stopAllMediaTracks]);
 
   const handleMeetingEnded = useCallback((reason: string) => {
     stopAllMediaTracks();
     alert(reason);
-    router.push("/");
-  }, [router, stopAllMediaTracks]);
+    window.location.href = "/";
+  }, [stopAllMediaTracks]);
 
   const handleMuteRequested = useCallback(() => {
     setAudioState(false);
@@ -246,9 +247,9 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const handleLeaveMeeting = async () => {
     stopAllMediaTracks();
     if (meeting && clientId) {
-      await api.leaveMeeting(meeting.meeting_id, clientId).catch(console.error);
+      api.leaveMeeting(meeting.meeting_id, clientId).catch(console.error);
     }
-    router.push("/");
+    window.location.href = "/";
   };
 
   // End meeting for everyone handler (host only)
@@ -256,9 +257,9 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     stopAllMediaTracks();
     if (meeting) {
       endMeetingForEveryone();
-      await api.endMeeting(meeting.meeting_id).catch(console.error);
+      api.endMeeting(meeting.meeting_id).catch(console.error);
     }
-    router.push("/");
+    window.location.href = "/";
   };
 
   // Send reaction emoji

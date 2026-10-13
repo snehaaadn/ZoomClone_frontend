@@ -7,6 +7,26 @@ interface MediaDeviceOption {
   label: string;
 }
 
+// Module-level global registry of all active media tracks across the application
+const globalMediaTracks = new Set<MediaStreamTrack>();
+
+export function registerMediaTrack(track: MediaStreamTrack | null | undefined) {
+  if (!track) return;
+  globalMediaTracks.add(track);
+  track.addEventListener("ended", () => {
+    globalMediaTracks.delete(track);
+  });
+}
+
+export function stopAllGlobalMediaTracks() {
+  globalMediaTracks.forEach((track) => {
+    try {
+      track.stop();
+    } catch {}
+  });
+  globalMediaTracks.clear();
+}
+
 export function useMediaStream(
   initialVideo: boolean = true,
   initialAudio: boolean = true,
@@ -45,6 +65,7 @@ export function useMediaStream(
       });
       streamRef.current = null;
     }
+    stopAllGlobalMediaTracks();
     setStream(null);
     setIsVideoEnabled(false);
     setIsAudioEnabled(false);
@@ -133,6 +154,9 @@ export function useMediaStream(
     }
 
     if (acquiredStream) {
+      // Register all acquired tracks in global tracking registry
+      acquiredStream.getTracks().forEach(registerMediaTrack);
+
       // If user wanted video OFF initially, stop the video track immediately
       const videoTrack = acquiredStream.getVideoTracks()[0];
       if (videoTrack) {
@@ -141,6 +165,7 @@ export function useMediaStream(
             videoTrack.stop();
           } catch {}
           acquiredStream.removeTrack(videoTrack);
+          globalMediaTracks.delete(videoTrack);
         }
       }
 
@@ -152,6 +177,7 @@ export function useMediaStream(
             audioTrack.stop();
           } catch {}
           acquiredStream.removeTrack(audioTrack);
+          globalMediaTracks.delete(audioTrack);
         }
       }
 
@@ -212,9 +238,16 @@ export function useMediaStream(
             track.stop();
           } catch {}
           streamRef.current?.removeTrack(track);
+          globalMediaTracks.delete(track);
         });
         setStream(new MediaStream(streamRef.current.getTracks()));
       }
+      globalMediaTracks.forEach((t) => {
+        if (t.kind === "video") {
+          try { t.stop(); } catch {}
+          globalMediaTracks.delete(t);
+        }
+      });
       setIsVideoEnabled(false);
     } else {
       // Currently OFF -> Turn ON and acquire camera track
@@ -223,6 +256,7 @@ export function useMediaStream(
         const newVideoStream = await navigator.mediaDevices.getUserMedia({
           video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice } } : true,
         });
+        newVideoStream.getTracks().forEach(registerMediaTrack);
         const newTrack = newVideoStream.getVideoTracks()[0];
 
         if (newTrack) {
@@ -231,6 +265,7 @@ export function useMediaStream(
             streamRef.current.getVideoTracks().forEach((t) => {
               try { t.stop(); } catch {}
               streamRef.current?.removeTrack(t);
+              globalMediaTracks.delete(t);
             });
             streamRef.current.addTrack(newTrack);
             setStream(new MediaStream(streamRef.current.getTracks()));
@@ -262,9 +297,16 @@ export function useMediaStream(
             track.stop();
           } catch {}
           streamRef.current?.removeTrack(track);
+          globalMediaTracks.delete(track);
         });
         setStream(new MediaStream(streamRef.current.getTracks()));
       }
+      globalMediaTracks.forEach((t) => {
+        if (t.kind === "audio") {
+          try { t.stop(); } catch {}
+          globalMediaTracks.delete(t);
+        }
+      });
       setIsAudioEnabled(false);
     } else {
       // Currently OFF -> Turn ON (Unmute)
@@ -273,6 +315,7 @@ export function useMediaStream(
         const newAudioStream = await navigator.mediaDevices.getUserMedia({
           audio: selectedAudioDevice ? { deviceId: { exact: selectedAudioDevice } } : true,
         });
+        newAudioStream.getTracks().forEach(registerMediaTrack);
         const newTrack = newAudioStream.getAudioTracks()[0];
 
         if (newTrack) {
@@ -281,6 +324,7 @@ export function useMediaStream(
             streamRef.current.getAudioTracks().forEach((t) => {
               try { t.stop(); } catch {}
               streamRef.current?.removeTrack(t);
+              globalMediaTracks.delete(t);
             });
             streamRef.current.addTrack(newTrack);
             setStream(new MediaStream(streamRef.current.getTracks()));
@@ -309,12 +353,14 @@ export function useMediaStream(
           const fresh = await navigator.mediaDevices.getUserMedia({
             audio: selectedAudioDevice ? { deviceId: { exact: selectedAudioDevice } } : true,
           });
+          fresh.getTracks().forEach(registerMediaTrack);
           const track = fresh.getAudioTracks()[0];
           if (track) {
             if (streamRef.current) {
               streamRef.current.getAudioTracks().forEach((t) => {
                 try { t.stop(); } catch {}
                 streamRef.current?.removeTrack(t);
+                globalMediaTracks.delete(t);
               });
               streamRef.current.addTrack(track);
               setStream(new MediaStream(streamRef.current.getTracks()));
@@ -336,9 +382,16 @@ export function useMediaStream(
             track.stop();
           } catch {}
           streamRef.current?.removeTrack(track);
+          globalMediaTracks.delete(track);
         });
         setStream(new MediaStream(streamRef.current.getTracks()));
       }
+      globalMediaTracks.forEach((t) => {
+        if (t.kind === "audio") {
+          try { t.stop(); } catch {}
+          globalMediaTracks.delete(t);
+        }
+      });
       setIsAudioEnabled(false);
     }
   }, [selectedAudioDevice]);
@@ -350,12 +403,14 @@ export function useMediaStream(
           const fresh = await navigator.mediaDevices.getUserMedia({
             video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice } } : true,
           });
+          fresh.getTracks().forEach(registerMediaTrack);
           const track = fresh.getVideoTracks()[0];
           if (track) {
             if (streamRef.current) {
               streamRef.current.getVideoTracks().forEach((t) => {
                 try { t.stop(); } catch {}
                 streamRef.current?.removeTrack(t);
+                globalMediaTracks.delete(t);
               });
               streamRef.current.addTrack(track);
               setStream(new MediaStream(streamRef.current.getTracks()));
@@ -377,9 +432,16 @@ export function useMediaStream(
             track.stop();
           } catch {}
           streamRef.current?.removeTrack(track);
+          globalMediaTracks.delete(track);
         });
         setStream(new MediaStream(streamRef.current.getTracks()));
       }
+      globalMediaTracks.forEach((t) => {
+        if (t.kind === "video") {
+          try { t.stop(); } catch {}
+          globalMediaTracks.delete(t);
+        }
+      });
       setIsVideoEnabled(false);
     }
   }, [selectedVideoDevice]);
