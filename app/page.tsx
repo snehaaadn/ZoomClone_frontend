@@ -90,6 +90,8 @@ export default function DashboardPage() {
     if (typeof window !== "undefined") {
       sessionStorage.setItem("zoom_display_name", "Sneha Debnath");
       sessionStorage.setItem("zoom_passcode", meeting.passcode);
+      sessionStorage.setItem("zoom_video_off", "false");
+      sessionStorage.setItem("zoom_audio_off", "false");
     }
     router.push(`/meeting/${meeting.meeting_id}`);
   };

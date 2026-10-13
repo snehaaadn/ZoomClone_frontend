@@ -127,7 +127,21 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const stopAllMediaTracks = useCallback(() => {
     stopLocalStream();
     stopScreenShare();
-  }, [stopLocalStream, stopScreenShare]);
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+    }
+    if (screenStream) {
+      screenStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+    }
+  }, [stopLocalStream, stopScreenShare, localStream, screenStream]);
 
   // Clean up all media tracks when exiting the meeting room
   useEffect(() => {

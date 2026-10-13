@@ -12,7 +12,7 @@ interface ScheduleModalProps {
 }
 
 export function ScheduleModal({ isOpen, onClose, onMeetingScheduled }: ScheduleModalProps) {
-  const [topic, setTopic] = useState("Weekly Team Sync");
+  const [topic, setTopic] = useState("");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("10:00");
@@ -24,6 +24,8 @@ export function ScheduleModal({ isOpen, onClose, onMeetingScheduled }: ScheduleM
 
   React.useEffect(() => {
     if (isOpen) {
+      setTopic("");
+      setDescription("");
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
       setDate(tomorrow.toISOString().split("T")[0]);

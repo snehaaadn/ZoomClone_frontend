@@ -34,11 +34,18 @@ export function useMediaStream(
       });
       streamRef.current = null;
     }
+    if (stream) {
+      stream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
+      });
+    }
     setStream(null);
     setIsVideoEnabled(false);
     setIsAudioEnabled(false);
     setIsLoading(false);
-  }, []);
+  }, [stream]);
 
   // Enumerate hardware devices
   const refreshDevices = useCallback(async () => {
@@ -178,34 +185,32 @@ export function useMediaStream(
     };
   }, [enabled, initStream, stopStream]);
 
-  // Real-time permission listener & window focus listener so user NEVER needs to reload the page
+  // Listen for device connect/disconnect changes
   useEffect(() => {
     if (typeof window === "undefined" || !enabled) return;
 
-    const handleAutoDetect = () => {
-      // Re-acquire stream if previously blocked or inactive
-      if (!streamRef.current || streamRef.current.getTracks().length === 0 || permissionError) {
+    const handleDeviceChange = () => {
+      refreshDevices();
+    };
+
+    navigator.mediaDevices?.addEventListener("devicechange", handleDeviceChange);
+
+    // If permission was previously blocked and user unlocks it in browser settings
+    let camStatus: PermissionStatus | null = null;
+    let micStatus: PermissionStatus | null = null;
+
+    const handlePermissionChange = () => {
+      if (permissionError) {
         initStream();
       }
     };
-
-    // When returning to tab after changing browser permissions in lock/settings popup
-    window.addEventListener("focus", handleAutoDetect);
-    document.addEventListener("visibilitychange", handleAutoDetect);
-
-    // When hardware device state changes
-    navigator.mediaDevices?.addEventListener("devicechange", handleAutoDetect);
-
-    // Browser permission status change listeners (Chrome, Edge, Brave, Firefox)
-    let camStatus: PermissionStatus | null = null;
-    let micStatus: PermissionStatus | null = null;
 
     if (navigator.permissions?.query) {
       navigator.permissions
         .query({ name: "camera" as PermissionName })
         .then((status) => {
           camStatus = status;
-          status.addEventListener("change", handleAutoDetect);
+          status.addEventListener("change", handlePermissionChange);
         })
         .catch(() => {});
 
@@ -213,19 +218,17 @@ export function useMediaStream(
         .query({ name: "microphone" as PermissionName })
         .then((status) => {
           micStatus = status;
-          status.addEventListener("change", handleAutoDetect);
+          status.addEventListener("change", handlePermissionChange);
         })
         .catch(() => {});
     }
 
     return () => {
-      window.removeEventListener("focus", handleAutoDetect);
-      document.removeEventListener("visibilitychange", handleAutoDetect);
-      navigator.mediaDevices?.removeEventListener("devicechange", handleAutoDetect);
-      camStatus?.removeEventListener("change", handleAutoDetect);
-      micStatus?.removeEventListener("change", handleAutoDetect);
+      navigator.mediaDevices?.removeEventListener("devicechange", handleDeviceChange);
+      camStatus?.removeEventListener("change", handlePermissionChange);
+      micStatus?.removeEventListener("change", handlePermissionChange);
     };
-  }, [enabled, initStream, permissionError]);
+  }, [enabled, initStream, permissionError, refreshDevices]);
 
   // Toggle Video: when stopping, call track.stop() to turn hardware off from system
   const toggleVideo = useCallback(async () => {
