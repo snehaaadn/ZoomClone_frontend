@@ -22,8 +22,22 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun2.l.google.com:19302" },
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" },
-    { urls: "stun:stun.services.mozilla.com" },
-    { urls: "stun:global.stun.twilio.com:3478" },
+    { urls: "stun:openrelay.metered.ca:80" },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
+    {
+      urls: "turns:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject",
+    },
   ],
   iceCandidatePoolSize: 10,
 };
@@ -136,31 +150,31 @@ export function useWebRTC({
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnections.current.set(targetClientId, pc);
 
-      // Pre-allocate audio & video transceivers so track replacing works smoothly without renegotiation
-      let videoTransceiver: RTCRtpTransceiver | undefined;
-      let audioTransceiver: RTCRtpTransceiver | undefined;
-      try {
-        if (pc.addTransceiver) {
-          audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
-          videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
-        }
-      } catch {}
-
-      // Add local stream tracks to the connection
+      // Add all active local tracks first
       if (localStream) {
-        const liveVideoTrack = localStream.getVideoTracks().find((t) => t.readyState === "live") || null;
-        const liveAudioTrack = localStream.getAudioTracks().find((t) => t.readyState === "live") || null;
+        localStream.getTracks().forEach((track) => {
+          try {
+            pc.addTrack(track, localStream);
+          } catch (e) {
+            console.warn("Error adding local track:", e);
+          }
+        });
+      }
 
-        if (videoTransceiver && liveVideoTrack) {
-          videoTransceiver.sender.replaceTrack(liveVideoTrack).catch(console.error);
-        } else if (liveVideoTrack) {
-          try { pc.addTrack(liveVideoTrack, localStream); } catch {}
-        }
+      // If initiator, pre-allocate transceivers if local tracks aren't active yet so SDP offer includes audio & video
+      if (isInitiator) {
+        try {
+          const hasAudio = localStream?.getAudioTracks().some((t) => t.readyState === "live");
+          const hasVideo = localStream?.getVideoTracks().some((t) => t.readyState === "live");
 
-        if (audioTransceiver && liveAudioTrack) {
-          audioTransceiver.sender.replaceTrack(liveAudioTrack).catch(console.error);
-        } else if (liveAudioTrack) {
-          try { pc.addTrack(liveAudioTrack, localStream); } catch {}
+          if (!hasAudio && pc.addTransceiver) {
+            pc.addTransceiver("audio", { direction: "sendrecv" });
+          }
+          if (!hasVideo && pc.addTransceiver) {
+            pc.addTransceiver("video", { direction: "sendrecv" });
+          }
+        } catch (err) {
+          console.warn("Error adding transceivers for initiator:", err);
         }
       }
 
@@ -179,24 +193,31 @@ export function useWebRTC({
 
       // Handle incoming remote stream tracks
       pc.ontrack = (event) => {
-        const incomingStream = event.streams[0] || new MediaStream();
-        if (!event.streams[0]) {
-          incomingStream.addTrack(event.track);
-        }
-
+        const remoteTrack = event.track;
         setPeerStreams((prev) => {
           const existing = prev.find((p) => p.clientId === targetClientId);
+          let targetStream: MediaStream;
+
           if (existing && existing.stream) {
-            const currentTracks = existing.stream.getTracks();
-            if (!currentTracks.some((t) => t.id === event.track.id)) {
-              existing.stream.addTrack(event.track);
+            targetStream = existing.stream;
+            if (!targetStream.getTracks().some((t) => t.id === remoteTrack.id)) {
+              targetStream.addTrack(remoteTrack);
             }
+          } else if (event.streams && event.streams[0]) {
+            targetStream = event.streams[0];
+          } else {
+            targetStream = new MediaStream([remoteTrack]);
+          }
+
+          const updatedStream = new MediaStream(targetStream.getTracks());
+
+          if (existing) {
             return prev.map((p) =>
               p.clientId === targetClientId
                 ? {
                     ...p,
                     displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
-                    stream: new MediaStream(existing.stream.getTracks()),
+                    stream: updatedStream,
                   }
                 : p
             );
@@ -205,7 +226,7 @@ export function useWebRTC({
           const peerData: PeerStream = {
             clientId: targetClientId,
             displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
-            stream: incomingStream,
+            stream: updatedStream,
           };
           return [...prev, peerData];
         });
@@ -219,7 +240,7 @@ export function useWebRTC({
 
       // If initiator, create and send offer
       if (isInitiator) {
-        pc.createOffer()
+        pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })
           .then((offer) => pc.setLocalDescription(offer))
           .then(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -251,8 +272,8 @@ export function useWebRTC({
       const videoTransceiver = transceivers.find((t) => t.receiver.track.kind === "video");
       const audioTransceiver = transceivers.find((t) => t.receiver.track.kind === "audio");
 
-      const videoSender = videoTransceiver?.sender || senders.find((s) => s.track?.kind === "video");
-      const audioSender = audioTransceiver?.sender || senders.find((s) => s.track?.kind === "audio");
+      const videoSender = senders.find((s) => s.track?.kind === "video" || (!s.track && (s as any).kind === "video")) || videoTransceiver?.sender;
+      const audioSender = senders.find((s) => s.track?.kind === "audio" || (!s.track && (s as any).kind === "audio")) || audioTransceiver?.sender;
 
       if (videoSender) {
         videoSender.replaceTrack(liveVideoTrack).catch(console.error);
@@ -291,7 +312,7 @@ export function useWebRTC({
         if (!isMountedRef.current) return;
         setIsConnected(true);
 
-        // Start 20-second heartbeat to prevent Render from dropping idle connection (55s limit)
+        // Start 20-second heartbeat to prevent cloud timeout
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
@@ -310,7 +331,6 @@ export function useWebRTC({
           const { type } = data;
 
           if (type === "pong") {
-            // Heartbeat response from server
             return;
           }
 
@@ -372,6 +392,19 @@ export function useWebRTC({
             const pc = createPeerConnection(data.sender, peerNames.current.get(data.sender) || "Peer", false);
             await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
             await drainIceCandidates(data.sender, pc);
+
+            // Associate any active local tracks to senders after remote description is configured
+            if (localStream) {
+              const senders = pc.getSenders();
+              localStream.getTracks().forEach((track) => {
+                const sender = senders.find((s) => s.track?.kind === track.kind || (!s.track && (s as any).kind === track.kind));
+                if (sender) {
+                  sender.replaceTrack(track).catch(console.error);
+                } else {
+                  try { pc.addTrack(track, localStream); } catch {}
+                }
+              });
+            }
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);

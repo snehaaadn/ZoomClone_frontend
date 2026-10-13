@@ -241,6 +241,12 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     },
   });
 
+  const handleHostMuteAll = useCallback(() => {
+    sendMuteAll();
+    // Immediately update local UI so host sees all participants muted
+    setPeerStreams((prev) => prev.map((p) => ({ ...p, isMuted: true })));
+  }, [sendMuteAll, setPeerStreams]);
+
   // Periodic sync fallback: Poll meeting details every 4 seconds to guarantee participant list stays up to date
   useEffect(() => {
     if (!hasJoined) return;
@@ -510,7 +516,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           isLocalMuted={!isAudioEnabled}
           isLocalVideoOff={!isVideoEnabled}
           peerStreams={peerStreams}
-          onMuteAll={isHost ? sendMuteAll : undefined}
+          onMuteAll={isHost ? handleHostMuteAll : undefined}
           onRemovePeer={isHost ? removePeer : undefined}
           onOpenInvite={() => setIsInviteModalOpen(true)}
         />

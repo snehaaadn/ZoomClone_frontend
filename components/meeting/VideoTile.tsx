@@ -28,6 +28,15 @@ export function VideoTile({
   isPinned = false,
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Check if stream actually contains an active, live video track
+  const hasLiveVideo = Boolean(
+    stream &&
+    stream.getVideoTracks().some((t) => t.readyState === "live" && t.enabled)
+  );
+
+  const shouldRenderVideo = hasLiveVideo && !isVideoOff;
 
   const handleVideoRef = (el: HTMLVideoElement | null) => {
     videoRef.current = el;
@@ -46,7 +55,17 @@ export function VideoTile({
       }
       videoRef.current.play().catch(() => {});
     }
-  }, [stream, isVideoOff]);
+  }, [stream, shouldRenderVideo]);
+
+  // Ensure remote audio plays reliably regardless of video state
+  useEffect(() => {
+    if (!isSelf && audioRef.current && stream) {
+      if (audioRef.current.srcObject !== stream) {
+        audioRef.current.srcObject = stream;
+      }
+      audioRef.current.play().catch(() => {});
+    }
+  }, [stream, isSelf]);
 
   return (
     <div
@@ -54,8 +73,23 @@ export function VideoTile({
         isSpeaking ? "border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]" : "border-transparent"
       } w-full h-full min-h-[180px]`}
     >
+      {/* Remote Audio Element - guarantees sound is never muted by video display */}
+      {!isSelf && stream && (
+        <audio
+          ref={(el) => {
+            audioRef.current = el;
+            if (el && el.srcObject !== stream) {
+              el.srcObject = stream;
+              el.play().catch(() => {});
+            }
+          }}
+          autoPlay
+          playsInline
+        />
+      )}
+
       {/* Video Element */}
-      {stream && !isVideoOff ? (
+      {shouldRenderVideo ? (
         <video
           ref={handleVideoRef}
           autoPlay
@@ -64,7 +98,7 @@ export function VideoTile({
           className={`w-full h-full object-cover ${isSelf ? "-scale-x-100" : ""}`}
         />
       ) : (
-        /* Avatar Placeholder when Camera is Off */
+        /* Avatar Placeholder when Camera is Off or Video Not Ready */
         <div className="flex flex-col items-center justify-center select-none">
           <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white text-2xl sm:text-3xl font-bold shadow-lg">
             {getInitials(displayName)}
