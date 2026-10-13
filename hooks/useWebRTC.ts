@@ -12,6 +12,7 @@ interface UseWebRTCProps {
   onKicked?: (reason: string) => void;
   onMeetingEnded?: (reason: string) => void;
   onMuteRequested?: () => void;
+  onUnmuteRequested?: () => void;
   onReactionReceived?: (emoji: string, senderName: string) => void;
 }
 
@@ -94,6 +95,7 @@ export function useWebRTC({
   onKicked,
   onMeetingEnded,
   onMuteRequested,
+  onUnmuteRequested,
   onReactionReceived,
 }: UseWebRTCProps) {
   const [peerStreams, setPeerStreams] = useState<PeerStream[]>([]);
@@ -453,6 +455,8 @@ export function useWebRTC({
             onReactionReceived?.(data.emoji, data.displayName || "Participant");
           } else if (type === "mute-all") {
             onMuteRequested?.();
+          } else if (type === "unmute-all") {
+            onUnmuteRequested?.();
           } else if (type === "removed-by-host") {
             onKicked?.(data.message || "Removed by host.");
           } else if (type === "meeting-ended") {
@@ -516,7 +520,7 @@ export function useWebRTC({
         wsRef.current.close();
       }
     };
-  }, [meetingId, clientId, displayName, enabled, createPeerConnection, cleanUpPeer, drainIceCandidates, onKicked, onMeetingEnded, onMuteRequested, onReactionReceived]);
+  }, [meetingId, clientId, displayName, enabled, createPeerConnection, cleanUpPeer, drainIceCandidates, onKicked, onMeetingEnded, onMuteRequested, onUnmuteRequested, onReactionReceived]);
 
   const sendChatMessage = useCallback(
     (text: string) => {
@@ -573,6 +577,12 @@ export function useWebRTC({
     }
   }, []);
 
+  const sendUnmuteAll = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "unmute-all" }));
+    }
+  }, []);
+
   const removePeer = useCallback((targetClientId: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -582,7 +592,8 @@ export function useWebRTC({
         })
       );
     }
-  }, []);
+    cleanUpPeer(targetClientId);
+  }, [cleanUpPeer]);
 
   const endMeetingForEveryone = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -597,6 +608,7 @@ export function useWebRTC({
   return {
     peerStreams,
     setPeerStreams,
+    cleanUpPeer,
     chatMessages,
     isConnected,
     unreadChatCount,
@@ -606,6 +618,7 @@ export function useWebRTC({
     sendReaction,
     broadcastScreenState,
     sendMuteAll,
+    sendUnmuteAll,
     removePeer,
     endMeetingForEveryone,
     syncPeers,

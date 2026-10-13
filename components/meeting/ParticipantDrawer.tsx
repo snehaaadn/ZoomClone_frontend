@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { X, Mic, MicOff, Video, VideoOff, Crown, UserX, VolumeX } from "lucide-react";
+import { X, Mic, MicOff, Video, VideoOff, Crown, UserX, VolumeX, Volume2 } from "lucide-react";
 import { PeerStream } from "@/types";
 import { getInitials } from "@/lib/utils";
 
@@ -15,6 +15,7 @@ interface ParticipantDrawerProps {
   isLocalVideoOff: boolean;
   peerStreams: PeerStream[];
   onMuteAll?: () => void;
+  onUnmuteAll?: () => void;
   onRemovePeer?: (clientId: string) => void;
   onOpenInvite: () => void;
 }
@@ -29,12 +30,14 @@ export function ParticipantDrawer({
   isLocalVideoOff,
   peerStreams,
   onMuteAll,
+  onUnmuteAll,
   onRemovePeer,
   onOpenInvite,
 }: ParticipantDrawerProps) {
   if (!isOpen) return null;
 
   const totalCount = 1 + peerStreams.length;
+  const areAllGuestsMuted = peerStreams.length > 0 && peerStreams.every((p) => p.isMuted);
 
   return (
     <aside className="w-80 bg-[#1E232A] border-l border-white/10 flex flex-col h-full text-white z-20 shrink-0 select-none animate-in slide-in-from-right duration-150">
@@ -117,43 +120,61 @@ export function ParticipantDrawer({
                 </div>
               </div>
 
-            <div className="flex items-center gap-2 text-gray-400">
-              {peer.isMuted ? (
-                <MicOff className="w-4 h-4 text-red-400" />
-              ) : (
-                <Mic className="w-4 h-4 text-emerald-400" />
-              )}
-              {peer.isVideoOff ? (
-                <VideoOff className="w-4 h-4 text-red-400" />
-              ) : (
-                <Video className="w-4 h-4 text-gray-300" />
-              )}
+              <div className="flex items-center gap-2 text-gray-400">
+                {peer.isMuted ? (
+                  <MicOff className="w-4 h-4 text-red-400" />
+                ) : (
+                  <Mic className="w-4 h-4 text-emerald-400" />
+                )}
+                {peer.isVideoOff ? (
+                  <VideoOff className="w-4 h-4 text-red-400" />
+                ) : (
+                  <Video className="w-4 h-4 text-gray-300" />
+                )}
 
-              {/* Host Control: Remove Peer */}
-              {isLocalHost && onRemovePeer && (
-                <button
-                  onClick={() => onRemovePeer(peer.clientId)}
-                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded transition-all cursor-pointer"
-                  title="Remove from meeting"
-                >
-                  <UserX className="w-3.5 h-3.5" />
-                </button>
-              )}
+                {/* Host Control: Remove Peer */}
+                {isLocalHost && onRemovePeer && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (confirm(`Remove ${peer.displayName} from the meeting?`)) {
+                        onRemovePeer(peer.clientId);
+                      }
+                    }}
+                    className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-500/20 rounded-md transition-colors cursor-pointer"
+                    title={`Remove ${peer.displayName}`}
+                  >
+                    <UserX className="w-4 h-4 text-red-400" />
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
       </div>
 
       {/* Footer / Host Controls */}
       <div className="p-3 border-t border-white/10 space-y-2 bg-[#171B21]">
         {isLocalHost && (
           <button
-            onClick={onMuteAll}
-            className="w-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            onClick={areAllGuestsMuted ? onUnmuteAll : onMuteAll}
+            className={`w-full text-xs font-semibold py-2 px-3 rounded-lg flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+              areAllGuestsMuted
+                ? "bg-emerald-600/30 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/40"
+                : "bg-white/10 hover:bg-white/20 text-white"
+            }`}
           >
-            <VolumeX className="w-3.5 h-3.5" />
-            <span>Mute All</span>
+            {areAllGuestsMuted ? (
+              <>
+                <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Unmute All</span>
+              </>
+            ) : (
+              <>
+                <VolumeX className="w-3.5 h-3.5" />
+                <span>Mute All</span>
+              </>
+            )}
           </button>
         )}
 

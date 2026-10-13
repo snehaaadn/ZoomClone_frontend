@@ -211,6 +211,10 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     setAudioState(false);
   }, [setAudioState]);
 
+  const handleUnmuteRequested = useCallback(() => {
+    setAudioState(true);
+  }, [setAudioState]);
+
   // Real-time WebRTC & signaling hook (only active once user has joined)
   const {
     peerStreams,
@@ -224,6 +228,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     sendReaction,
     broadcastScreenState,
     sendMuteAll,
+    sendUnmuteAll,
     removePeer,
     endMeetingForEveryone,
   } = useWebRTC({
@@ -235,6 +240,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     onKicked: handleKicked,
     onMeetingEnded: handleMeetingEnded,
     onMuteRequested: handleMuteRequested,
+    onUnmuteRequested: handleUnmuteRequested,
     onReactionReceived: (emoji) => {
       setActiveReaction(emoji);
       setTimeout(() => setActiveReaction(null), 3000);
@@ -246,6 +252,40 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     // Immediately update local UI so host sees all participants muted
     setPeerStreams((prev) => prev.map((p) => ({ ...p, isMuted: true })));
   }, [sendMuteAll, setPeerStreams]);
+
+  const handleHostUnmuteAll = useCallback(() => {
+    sendUnmuteAll();
+    // Immediately update local UI so host sees all participants unmuted
+    setPeerStreams((prev) => prev.map((p) => ({ ...p, isMuted: false })));
+  }, [sendUnmuteAll, setPeerStreams]);
+
+  const handleRemovePeer = useCallback(
+    async (targetClientId: string) => {
+      // 1. Send WebSocket kick notification & close WebRTC peer connection
+      removePeer(targetClientId);
+
+      // 2. Remove from local peerStreams state immediately
+      setPeerStreams((prev) => prev.filter((p) => p.clientId !== targetClientId));
+
+      // 3. Mark as removed in the backend DB so participant is not re-added by background sync
+      if (meeting?.participants) {
+        const targetPart = meeting.participants.find((p) => p.client_id === targetClientId);
+        if (targetPart) {
+          api.removeParticipant(targetPart.id).catch(console.error);
+          setMeeting((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  participants: prev.participants.filter((p) => p.client_id !== targetClientId),
+                  participant_count: Math.max(1, prev.participant_count - 1),
+                }
+              : prev
+          );
+        }
+      }
+    },
+    [removePeer, setPeerStreams, meeting]
+  );
 
   // Periodic sync fallback: Poll meeting details every 4 seconds to guarantee participant list stays up to date
   useEffect(() => {
@@ -517,7 +557,8 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           isLocalVideoOff={!isVideoEnabled}
           peerStreams={peerStreams}
           onMuteAll={isHost ? handleHostMuteAll : undefined}
-          onRemovePeer={isHost ? removePeer : undefined}
+          onUnmuteAll={isHost ? handleHostUnmuteAll : undefined}
+          onRemovePeer={isHost ? handleRemovePeer : undefined}
           onOpenInvite={() => setIsInviteModalOpen(true)}
         />
 
