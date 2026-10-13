@@ -53,6 +53,7 @@ export interface JoinMeetingPayload {
   display_name: string;
   passcode?: string;
   client_id?: string;
+  is_host?: boolean;
 }
 
 export interface MeetingValidationResult {

@@ -10,6 +10,7 @@ interface ParticipantDrawerProps {
   onClose: () => void;
   localDisplayName: string;
   isLocalHost: boolean;
+  hostDisplayName?: string;
   isLocalMuted: boolean;
   isLocalVideoOff: boolean;
   peerStreams: PeerStream[];
@@ -23,6 +24,7 @@ export function ParticipantDrawer({
   onClose,
   localDisplayName,
   isLocalHost,
+  hostDisplayName,
   isLocalMuted,
   isLocalVideoOff,
   peerStreams,
@@ -62,10 +64,12 @@ export function ParticipantDrawer({
                 <span>{localDisplayName}</span>
                 <span className="text-[10px] text-gray-400">(Me)</span>
               </p>
-              {isLocalHost && (
+              {isLocalHost ? (
                 <span className="text-[10px] text-blue-400 font-medium flex items-center gap-0.5">
                   <Crown className="w-2.5 h-2.5" /> Host
                 </span>
+              ) : (
+                <span className="text-[10px] text-gray-400 font-medium">Guest</span>
               )}
             </div>
           </div>
@@ -85,22 +89,33 @@ export function ParticipantDrawer({
         </div>
 
         {/* Remote peers */}
-        {peerStreams.map((peer) => (
-          <div
-            key={peer.clientId}
-            className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 transition-colors group"
-          >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
-                {getInitials(peer.displayName)}
+        {peerStreams.map((peer) => {
+          const cleanPeer = peer.displayName.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
+          const cleanHost = (hostDisplayName || "").replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
+          const isPeerHost = Boolean(cleanHost && cleanPeer === cleanHost);
+
+          return (
+            <div
+              key={peer.clientId}
+              className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 transition-colors group"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white text-xs font-bold shrink-0">
+                  {getInitials(peer.displayName)}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-gray-200 truncate">
+                    {peer.displayName}
+                  </p>
+                  {isPeerHost ? (
+                    <span className="text-[10px] text-blue-400 font-medium flex items-center gap-0.5">
+                      <Crown className="w-2.5 h-2.5" /> Host
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-gray-400 font-medium">Guest</span>
+                  )}
+                </div>
               </div>
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-gray-200 truncate">
-                  {peer.displayName}
-                </p>
-                <span className="text-[10px] text-gray-400">Participant</span>
-              </div>
-            </div>
 
             <div className="flex items-center gap-2 text-gray-400">
               {peer.isMuted ? (
@@ -126,7 +141,8 @@ export function ParticipantDrawer({
               )}
             </div>
           </div>
-        ))}
+        );
+      })}
       </div>
 
       {/* Footer / Host Controls */}

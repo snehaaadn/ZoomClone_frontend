@@ -13,6 +13,7 @@ import { ControlBar } from "@/components/meeting/ControlBar";
 import { ParticipantDrawer } from "@/components/meeting/ParticipantDrawer";
 import { ChatDrawer } from "@/components/meeting/ChatDrawer";
 import { InviteModal } from "@/components/modals/InviteModal";
+import { PreJoinScreen } from "@/components/meeting/PreJoinScreen";
 import { AlertCircle, Loader2 } from "lucide-react";
 
 interface MeetingPageProps {
@@ -28,10 +29,57 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const [isLoadingMeeting, setIsLoadingMeeting] = useState<boolean>(true);
   const [meetingError, setMeetingError] = useState<string | null>(null);
 
+  // Check if this browser tab has already joined this specific meeting
+  const [hasJoined, setHasJoined] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const joinedMeeting = sessionStorage.getItem("zoom_meeting_joined");
+      const storedName = sessionStorage.getItem("zoom_display_name");
+      const isMatch =
+        joinedMeeting &&
+        (joinedMeeting === meetingIdParam ||
+          joinedMeeting.replace(/-/g, "") === meetingIdParam.replace(/-/g, ""));
+      return Boolean(isMatch && storedName && storedName.trim());
+    }
+    return false;
+  });
+
   // User state
-  const [displayName, setDisplayName] = useState<string>("Sneha Debnath");
-  const [clientId, setClientId] = useState<string>("");
-  const [isHost, setIsHost] = useState<boolean>(false);
+  const [displayName, setDisplayName] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return (sessionStorage.getItem("zoom_display_name") || "")
+        .replace(/\s*\(Host\)\s*/gi, "")
+        .trim();
+    }
+    return "";
+  });
+
+  const [clientId, setClientId] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("zoom_client_id") || "";
+    }
+    return "";
+  });
+
+  const [isHost, setIsHost] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return sessionStorage.getItem("zoom_is_host") === "true";
+    }
+    return false;
+  });
+
+  const [urlPasscode, setUrlPasscode] = useState<string>("");
+
+  // Extract passcode from ?pwd= URL search query
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const searchParams = new URLSearchParams(window.location.search);
+      const pwd = searchParams.get("pwd");
+      if (pwd) {
+        setUrlPasscode(pwd);
+        sessionStorage.setItem("zoom_passcode", pwd);
+      }
+    }
+  }, []);
 
   // UI state
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
@@ -43,21 +91,6 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
   const [pinnedPeerId, setPinnedPeerId] = useState<string | null>(null);
   const [activeReaction, setActiveReaction] = useState<string | null>(null);
 
-  // Read pre-join preferences from sessionStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const storedName = sessionStorage.getItem("zoom_display_name");
-      if (storedName) {
-        setDisplayName(storedName.replace(/\s*\(Host\)\s*/gi, "").trim() || storedName);
-      }
-      const existingClientId =
-        sessionStorage.getItem("zoom_client_id") ||
-        `client-${Math.random().toString(36).substring(2, 9)}`;
-      sessionStorage.setItem("zoom_client_id", existingClientId);
-      setClientId(existingClientId);
-    }
-  }, []);
-
   // Fetch meeting details from backend
   useEffect(() => {
     async function loadMeeting() {
@@ -66,19 +99,22 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
         const data = await api.getMeeting(meetingIdParam);
         setMeeting(data);
 
-        // Check if current user is the host (ignoring case & (Host) suffixes)
-        const storedName = sessionStorage.getItem("zoom_display_name") || displayName;
-        const cleanUser = storedName.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
-        const cleanHost = (data.host_display_name || "").replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
-        if (cleanUser && cleanHost && cleanUser === cleanHost) {
-          setIsHost(true);
-        }
+        // If user already joined prior to load (e.g. host from dashboard), ensure backend registration
+        if (hasJoined && clientId && displayName) {
+          const storedHostFlag = sessionStorage.getItem("zoom_is_host") === "true";
+          const cleanUser = displayName.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
+          const cleanHost = (data.host_display_name || "")
+            .replace(/\s*\(.*?\)\s*/g, "")
+            .trim()
+            .toLowerCase();
+          const userIsHost = storedHostFlag && Boolean(cleanUser && cleanHost && cleanUser === cleanHost);
+          setIsHost(userIsHost);
 
-        // Register participant with backend
-        if (clientId) {
           await api.joinMeeting(data.meeting_id, {
-            display_name: storedName,
+            display_name: displayName,
             client_id: clientId,
+            is_host: userIsHost,
+            passcode: sessionStorage.getItem("zoom_passcode") || undefined,
           }).catch(console.error);
         }
       } catch (err: any) {
@@ -88,10 +124,8 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
       }
     }
 
-    if (clientId) {
-      loadMeeting();
-    }
-  }, [meetingIdParam, clientId, displayName]);
+    loadMeeting();
+  }, [meetingIdParam, hasJoined, clientId, displayName]);
 
   // Read initial audio/video preferences stably on mount
   const [initialVideoPref] = useState(() => {
@@ -139,7 +173,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     stopAllGlobalMediaTracks();
   }, [stopLocalStream, stopScreenShare]);
 
-  // Clean up all media tracks when exiting the meeting room (unmount or navigation only)
+  // Clean up all media tracks when exiting the meeting room
   useEffect(() => {
     const handleExit = () => {
       stopLocalStream();
@@ -177,7 +211,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     setAudioState(false);
   }, [setAudioState]);
 
-  // Real-time WebRTC & signaling hook
+  // Real-time WebRTC & signaling hook (only active once user has joined)
   const {
     peerStreams,
     chatMessages,
@@ -195,6 +229,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     clientId,
     displayName,
     localStream,
+    enabled: hasJoined && Boolean(clientId) && Boolean(displayName),
     onKicked: handleKicked,
     onMeetingEnded: handleMeetingEnded,
     onMuteRequested: handleMuteRequested,
@@ -206,13 +241,17 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
 
   // Broadcast local media track state when changed
   useEffect(() => {
-    broadcastMediaState(isAudioEnabled, isVideoEnabled);
-  }, [isAudioEnabled, isVideoEnabled, broadcastMediaState]);
+    if (hasJoined) {
+      broadcastMediaState(isAudioEnabled, isVideoEnabled);
+    }
+  }, [hasJoined, isAudioEnabled, isVideoEnabled, broadcastMediaState]);
 
   // Broadcast screen sharing state to peers
   useEffect(() => {
-    broadcastScreenState(isScreenSharing);
-  }, [isScreenSharing, broadcastScreenState]);
+    if (hasJoined) {
+      broadcastScreenState(isScreenSharing);
+    }
+  }, [hasJoined, isScreenSharing, broadcastScreenState]);
 
   // Clear unread count when chat drawer is opened
   useEffect(() => {
@@ -220,6 +259,50 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
       clearUnreadCount();
     }
   }, [isChatOpen, clearUnreadCount]);
+
+  // Handler for joining from PreJoinScreen
+  const handleJoinFromPreJoin = async (name: string, passcode?: string, claimHost?: boolean) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    const assignedClientId =
+      clientId || `client-${Math.random().toString(36).substring(2, 9)}`;
+
+    const userIsHost = Boolean(
+      claimHost &&
+      meeting &&
+      trimmed.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase() ===
+        meeting.host_display_name.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase()
+    );
+
+    if (typeof window !== "undefined") {
+      sessionStorage.setItem("zoom_client_id", assignedClientId);
+      sessionStorage.setItem("zoom_display_name", trimmed);
+      sessionStorage.setItem("zoom_is_host", userIsHost ? "true" : "false");
+      sessionStorage.setItem("zoom_meeting_joined", meeting?.meeting_id || meetingIdParam);
+      if (passcode) {
+        sessionStorage.setItem("zoom_passcode", passcode);
+      }
+    }
+
+    setDisplayName(trimmed);
+    setClientId(assignedClientId);
+    setIsHost(userIsHost);
+    setHasJoined(true);
+
+    if (meeting) {
+      try {
+        await api.joinMeeting(meeting.meeting_id, {
+          display_name: trimmed,
+          client_id: assignedClientId,
+          is_host: userIsHost,
+          passcode: passcode || undefined,
+        });
+      } catch (err: any) {
+        console.error("Backend join error:", err);
+      }
+    }
+  };
 
   // Fullscreen toggle handler
   const handleToggleFullscreen = () => {
@@ -232,11 +315,14 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     }
   };
 
-  // Leave meeting handler
+  // Leave meeting handler (updates this participant's status to 'left' without ending meeting for others)
   const handleLeaveMeeting = async () => {
     stopAllMediaTracks();
     if (meeting && clientId) {
       api.leaveMeeting(meeting.meeting_id, clientId).catch(console.error);
+    }
+    if (typeof window !== "undefined") {
+      sessionStorage.removeItem("zoom_meeting_joined");
     }
     window.location.href = "/";
   };
@@ -247,6 +333,9 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     if (meeting) {
       endMeetingForEveryone();
       api.endMeeting(meeting.meeting_id).catch(console.error);
+    }
+    if (typeof window !== "undefined") {
+      sessionStorage.removeItem("zoom_meeting_joined");
     }
     window.location.href = "/";
   };
@@ -282,6 +371,23 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           Return to Dashboard
         </button>
       </div>
+    );
+  }
+
+  // If user has not yet joined or provided their name, render the Pre-Join Screen
+  if (!hasJoined) {
+    return (
+      <PreJoinScreen
+        meeting={meeting}
+        localStream={localStream}
+        isVideoEnabled={isVideoEnabled}
+        isAudioEnabled={isAudioEnabled}
+        toggleVideo={toggleVideo}
+        toggleAudio={toggleAudio}
+        onJoin={handleJoinFromPreJoin}
+        initialPasscode={urlPasscode || meeting.passcode}
+        onCancel={() => router.push("/")}
+      />
     );
   }
 
@@ -338,6 +444,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           onStopScreenShare={stopScreenShare}
           onOpenInvite={() => setIsInviteModalOpen(true)}
           isHost={isHost}
+          hostDisplayName={meeting.host_display_name}
           pinnedPeerId={pinnedPeerId}
           onTogglePin={(id) => setPinnedPeerId(pinnedPeerId === id ? null : id)}
         />
@@ -348,6 +455,7 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           onClose={() => setIsParticipantsOpen(false)}
           localDisplayName={displayName}
           isLocalHost={isHost}
+          hostDisplayName={meeting.host_display_name}
           isLocalMuted={!isAudioEnabled}
           isLocalVideoOff={!isVideoEnabled}
           peerStreams={peerStreams}
@@ -364,7 +472,6 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
           onSendMessage={sendChatMessage}
         />
       </div>
-
 
       {/* Zoom Control Bar */}
       <ControlBar

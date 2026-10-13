@@ -17,6 +17,7 @@ interface VideoGridProps {
   onStopScreenShare: () => void;
   onOpenInvite: () => void;
   isHost: boolean;
+  hostDisplayName?: string;
   pinnedPeerId?: string | null;
   onTogglePin?: (id: string) => void;
 }
@@ -32,6 +33,7 @@ export function VideoGrid({
   onStopScreenShare,
   onOpenInvite,
   isHost,
+  hostDisplayName,
   pinnedPeerId,
   onTogglePin,
 }: VideoGridProps) {
@@ -132,18 +134,25 @@ export function VideoGrid({
         </div>
 
         {/* Remote peer tiles */}
-        {peerStreams.map((peer) => (
-          <div key={peer.clientId} className="w-full h-full min-h-[220px]">
-            <VideoTile
-              stream={peer.stream}
-              displayName={peer.displayName}
-              isMuted={peer.isMuted}
-              isVideoOff={peer.isVideoOff}
-              onPin={() => onTogglePin?.(peer.clientId)}
-              isPinned={pinnedPeerId === peer.clientId}
-            />
-          </div>
-        ))}
+        {peerStreams.map((peer) => {
+          const cleanPeer = peer.displayName.replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
+          const cleanHost = (hostDisplayName || "").replace(/\s*\(.*?\)\s*/g, "").trim().toLowerCase();
+          const isPeerHost = Boolean(cleanHost && cleanPeer === cleanHost);
+
+          return (
+            <div key={peer.clientId} className="w-full h-full min-h-[220px]">
+              <VideoTile
+                stream={peer.stream}
+                displayName={peer.displayName}
+                isHost={isPeerHost}
+                isMuted={peer.isMuted}
+                isVideoOff={peer.isVideoOff}
+                onPin={() => onTogglePin?.(peer.clientId)}
+                isPinned={pinnedPeerId === peer.clientId}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

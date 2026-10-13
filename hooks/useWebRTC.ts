@@ -8,6 +8,7 @@ interface UseWebRTCProps {
   clientId: string;
   displayName: string;
   localStream: MediaStream | null;
+  enabled?: boolean;
   onKicked?: (reason: string) => void;
   onMeetingEnded?: (reason: string) => void;
   onMuteRequested?: () => void;
@@ -26,6 +27,7 @@ export function useWebRTC({
   clientId,
   displayName,
   localStream,
+  enabled = true,
   onKicked,
   onMeetingEnded,
   onMuteRequested,
@@ -176,7 +178,7 @@ export function useWebRTC({
 
   // Connect WebSocket
   useEffect(() => {
-    if (!meetingId || !clientId) return;
+    if (!enabled || !meetingId || !clientId || !displayName) return;
 
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const defaultHost = typeof window !== "undefined" && window.location.hostname

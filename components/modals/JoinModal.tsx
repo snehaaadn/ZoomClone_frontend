@@ -23,7 +23,7 @@ export function JoinModal({
   const router = useRouter();
 
   const [inputVal, setInputVal] = useState(defaultMeetingId);
-  const [displayName, setDisplayName] = useState("Sneha Debnath");
+  const [displayName, setDisplayName] = useState("");
   const [passcode, setPasscode] = useState(defaultPasscode);
   const [turnOffVideo, setTurnOffVideo] = useState(false);
   const [dontConnectAudio, setDontConnectAudio] = useState(false);
@@ -106,6 +106,8 @@ export function JoinModal({
         sessionStorage.setItem("zoom_display_name", displayName.trim());
         sessionStorage.setItem("zoom_audio_off", dontConnectAudio ? "true" : "false");
         sessionStorage.setItem("zoom_video_off", turnOffVideo ? "true" : "false");
+        sessionStorage.setItem("zoom_is_host", "false");
+        sessionStorage.setItem("zoom_meeting_joined", res.meeting_id || meetingId);
         if (passcode) {
           sessionStorage.setItem("zoom_passcode", passcode);
         }
@@ -188,7 +190,7 @@ export function JoinModal({
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="Enter your name"
+              placeholder="Enter your name (e.g. Rahul)"
               className="w-full text-sm px-3.5 py-2.5 rounded-lg border border-gray-300 focus:border-[#0E71EB] focus:ring-2 focus:ring-[#0E71EB]/20 outline-none transition-all"
               required
             />

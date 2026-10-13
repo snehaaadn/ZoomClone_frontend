@@ -74,6 +74,8 @@ export default function DashboardPage() {
         sessionStorage.setItem("zoom_audio_off", (!config.isAudioEnabled).toString());
         sessionStorage.setItem("zoom_video_off", (!config.isVideoEnabled).toString());
         sessionStorage.setItem("zoom_display_name", "Sneha Debnath");
+        sessionStorage.setItem("zoom_is_host", "true");
+        sessionStorage.setItem("zoom_meeting_joined", meeting.meeting_id);
       }
 
       setIsInstantModalOpen(false);
@@ -92,6 +94,8 @@ export default function DashboardPage() {
       sessionStorage.setItem("zoom_passcode", meeting.passcode);
       sessionStorage.setItem("zoom_video_off", "false");
       sessionStorage.setItem("zoom_audio_off", "false");
+      sessionStorage.setItem("zoom_is_host", "true");
+      sessionStorage.setItem("zoom_meeting_joined", meeting.meeting_id);
     }
     router.push(`/meeting/${meeting.meeting_id}`);
   };
