@@ -8,9 +8,21 @@ import {
 } from "@/types";
 
 function getApiBaseUrl(): string {
-  const envUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-  const cleaned = envUrl.replace(/\/+$/, "");
-  return cleaned.endsWith("/api") ? cleaned : `${cleaned}/api`;
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    const cleaned = process.env.NEXT_PUBLIC_API_URL.replace(/\/+$/, "");
+    return cleaned.endsWith("/api") ? cleaned : `${cleaned}/api`;
+  }
+
+  if (typeof window !== "undefined") {
+    const isLocal =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
+    if (!isLocal) {
+      return "https://zoomclone-backend-581y.onrender.com/api";
+    }
+  }
+
+  return "http://localhost:8000/api";
 }
 
 const API_BASE_URL = getApiBaseUrl();

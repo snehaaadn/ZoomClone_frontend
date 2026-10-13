@@ -17,20 +17,25 @@ export function InviteModal({ isOpen, onClose, meeting }: InviteModalProps) {
 
   if (!isOpen || !meeting) return null;
 
+  const effectiveInviteUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/meeting/${meeting.meeting_id}?pwd=${meeting.passcode}`
+      : meeting.invite_url;
+
   const fullInvitationText = `${meeting.host_display_name} is inviting you to a Zoom meeting.
 
 Topic: ${meeting.title}
 Time: ${formatDate(meeting.start_time)}
 
 Join Zoom Meeting:
-${meeting.invite_url}
+${effectiveInviteUrl}
 
 Meeting ID: ${meeting.meeting_id}
 Passcode: ${meeting.passcode}
 `;
 
   const handleCopyLink = async () => {
-    const success = await copyToClipboard(meeting.invite_url);
+    const success = await copyToClipboard(effectiveInviteUrl);
     if (success) {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2000);
@@ -91,7 +96,7 @@ Passcode: ${meeting.passcode}
               <input
                 type="text"
                 readOnly
-                value={meeting.invite_url}
+                value={effectiveInviteUrl}
                 className="w-full text-xs px-3 py-2 rounded-lg border border-gray-300 bg-gray-50 text-gray-600 select-all font-mono outline-none"
               />
               <button

@@ -15,12 +15,59 @@ interface UseWebRTCProps {
   onReactionReceived?: (emoji: string, senderName: string) => void;
 }
 
-const ICE_SERVERS = {
+const ICE_SERVERS: RTCConfiguration = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
+    { urls: "stun:stun2.l.google.com:19302" },
+    { urls: "stun:stun3.l.google.com:19302" },
+    { urls: "stun:stun4.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" },
   ],
 };
+
+function getWebSocketUrl(meetingId: string, clientId: string, displayName: string): string {
+  const query = `?display_name=${encodeURIComponent(displayName)}`;
+  const path = `/ws/meetings/${encodeURIComponent(meetingId)}/${encodeURIComponent(clientId)}${query}`;
+
+  // 1. Explicit full WebSocket URL (e.g. wss://zoomclone-backend-581y.onrender.com)
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    const base = process.env.NEXT_PUBLIC_WS_URL.replace(/\/+$/, "");
+    return `${base}${path}`;
+  }
+
+  // 2. Explicit WebSocket host (e.g. zoomclone-backend-581y.onrender.com)
+  if (process.env.NEXT_PUBLIC_WS_HOST) {
+    const cleanHost = process.env.NEXT_PUBLIC_WS_HOST
+      .replace(/^https?:\/\//, "")
+      .replace(/^wss?:\/\//, "")
+      .replace(/\/+$/, "");
+    const wsProtocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProtocol}//${cleanHost}${path}`;
+  }
+
+  // 3. Automatically extract from NEXT_PUBLIC_API_URL
+  if (process.env.NEXT_PUBLIC_API_URL) {
+    try {
+      const parsed = new URL(process.env.NEXT_PUBLIC_API_URL);
+      const wsProtocol = parsed.protocol === "https:" ? "wss:" : "ws:";
+      return `${wsProtocol}//${parsed.host}${path}`;
+    } catch {}
+  }
+
+  // 4. In browser environment: check if on localhost or deployed
+  if (typeof window !== "undefined") {
+    const isLocalhost =
+      window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1";
+    if (isLocalhost) {
+      return `ws://localhost:8000${path}`;
+    }
+  }
+
+  // 5. Default fallback for deployed Vercel app to the live Render backend
+  return `wss://zoomclone-backend-581y.onrender.com${path}`;
+}
 
 export function useWebRTC({
   meetingId,
@@ -94,27 +141,30 @@ export function useWebRTC({
       // Handle incoming remote stream tracks
       pc.ontrack = (event) => {
         const [remoteStream] = event.streams;
-        if (remoteStream) {
-          setPeerStreams((prev) => {
-            const existingIndex = prev.findIndex((p) => p.clientId === targetClientId);
-            const peerData: PeerStream = {
-              clientId: targetClientId,
-              displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
-              stream: remoteStream,
-            };
+        const incomingStream = remoteStream || new MediaStream([event.track]);
+        setPeerStreams((prev) => {
+          const existingIndex = prev.findIndex((p) => p.clientId === targetClientId);
+          const peerData: PeerStream = {
+            clientId: targetClientId,
+            displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
+            stream: incomingStream,
+          };
 
-            if (existingIndex >= 0) {
-              const updated = [...prev];
-              updated[existingIndex] = peerData;
-              return updated;
-            }
-            return [...prev, peerData];
-          });
-        }
+          if (existingIndex >= 0) {
+            const updated = [...prev];
+            updated[existingIndex] = {
+              ...updated[existingIndex],
+              displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
+              stream: incomingStream,
+            };
+            return updated;
+          }
+          return [...prev, peerData];
+        });
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "disconnected" || pc.connectionState === "failed" || pc.connectionState === "closed") {
+        if (pc.connectionState === "closed") {
           cleanUpPeer(targetClientId);
         }
       };
@@ -180,20 +230,16 @@ export function useWebRTC({
   useEffect(() => {
     if (!enabled || !meetingId || !clientId || !displayName) return;
 
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const defaultHost = typeof window !== "undefined" && window.location.hostname
-      ? `${window.location.hostname}:8000`
-      : "localhost:8000";
-    const host = process.env.NEXT_PUBLIC_WS_HOST || defaultHost;
-    const wsUrl = `${wsProtocol}//${host}/ws/meetings/${encodeURIComponent(
-      meetingId
-    )}/${encodeURIComponent(clientId)}?display_name=${encodeURIComponent(displayName)}`;
-
+    const wsUrl = getWebSocketUrl(meetingId, clientId, displayName);
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       setIsConnected(true);
+    };
+
+    ws.onerror = (err) => {
+      console.warn("Signaling WebSocket connection error:", err);
     };
 
     ws.onmessage = async (event) => {
@@ -205,14 +251,42 @@ export function useWebRTC({
           // Connected: initiate connections with all existing peers
           const { peers } = data;
           if (Array.isArray(peers)) {
-            peers.forEach((peer: { clientId: string; displayName: string }) => {
+            peers.forEach((peer: { clientId: string; displayName: string; isMuted?: boolean; isVideoOff?: boolean }) => {
+              peerNames.current.set(peer.clientId, peer.displayName);
+              setPeerStreams((prev) => {
+                if (prev.some((p) => p.clientId === peer.clientId)) return prev;
+                return [
+                  ...prev,
+                  {
+                    clientId: peer.clientId,
+                    displayName: peer.displayName,
+                    stream: new MediaStream(),
+                    isMuted: peer.isMuted,
+                    isVideoOff: peer.isVideoOff,
+                  },
+                ];
+              });
               createPeerConnection(peer.clientId, peer.displayName, true);
             });
           }
         } else if (type === "peer-joined") {
-          // Another peer joined. Wait for their offer or register them
+          // Another peer joined. Register immediately in peerStreams so UI shows both participants
           peerNames.current.set(data.clientId, data.displayName);
-        } else if (type === "peer-left") {
+          setPeerStreams((prev) => {
+            if (prev.some((p) => p.clientId === data.clientId)) return prev;
+            return [
+              ...prev,
+              {
+                clientId: data.clientId,
+                displayName: data.displayName,
+                stream: new MediaStream(),
+                isMuted: data.isMuted,
+                isVideoOff: data.isVideoOff,
+              },
+            ];
+          });
+        }
+ else if (type === "peer-left") {
           cleanUpPeer(data.clientId);
         } else if (type === "offer") {
           const pc = createPeerConnection(data.sender, peerNames.current.get(data.sender) || "Peer", false);
