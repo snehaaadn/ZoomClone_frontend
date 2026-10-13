@@ -29,9 +29,22 @@ export function VideoTile({
 }: VideoTileProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const handleVideoRef = (el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el && stream) {
+      if (el.srcObject !== stream) {
+        el.srcObject = stream;
+      }
+      el.play().catch(() => {});
+    }
+  };
+
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
+      }
+      videoRef.current.play().catch(() => {});
     }
   }, [stream, isVideoOff]);
 
@@ -44,7 +57,7 @@ export function VideoTile({
       {/* Video Element */}
       {stream && !isVideoOff ? (
         <video
-          ref={videoRef}
+          ref={handleVideoRef}
           autoPlay
           playsInline
           muted={isSelf} // always mute self to prevent audio feedback loop

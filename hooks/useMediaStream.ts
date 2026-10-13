@@ -23,6 +23,17 @@ export function useMediaStream(
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   const streamRef = useRef<MediaStream | null>(null);
+  const isVideoEnabledRef = useRef<boolean>(false);
+  const isAudioEnabledRef = useRef<boolean>(false);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    isVideoEnabledRef.current = isVideoEnabled;
+  }, [isVideoEnabled]);
+
+  useEffect(() => {
+    isAudioEnabledRef.current = isAudioEnabled;
+  }, [isAudioEnabled]);
 
   // Stop all active tracks and release hardware from system
   const stopStream = useCallback(() => {
@@ -34,18 +45,11 @@ export function useMediaStream(
       });
       streamRef.current = null;
     }
-    if (stream) {
-      stream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch {}
-      });
-    }
     setStream(null);
     setIsVideoEnabled(false);
     setIsAudioEnabled(false);
     setIsLoading(false);
-  }, [stream]);
+  }, []);
 
   // Enumerate hardware devices
   const refreshDevices = useCallback(async () => {
@@ -129,7 +133,7 @@ export function useMediaStream(
     }
 
     if (acquiredStream) {
-      // If user wanted video OFF initially, IMMEDIATELY stop the video track so camera hardware is released from system!
+      // If user wanted video OFF initially, stop the video track immediately
       const videoTrack = acquiredStream.getVideoTracks()[0];
       if (videoTrack) {
         if (!initialVideo) {
@@ -140,7 +144,7 @@ export function useMediaStream(
         }
       }
 
-      // If user wanted audio OFF initially, IMMEDIATELY stop the audio track so microphone hardware is released from system!
+      // If user wanted audio OFF initially, stop the audio track immediately
       const audioTrack = acquiredStream.getAudioTracks()[0];
       if (audioTrack) {
         if (!initialAudio) {
@@ -173,19 +177,18 @@ export function useMediaStream(
     setIsLoading(false);
   }, [enabled, initialVideo, initialAudio, selectedAudioDevice, selectedVideoDevice, refreshDevices]);
 
-  // Initial stream mount/unmount
+  // Initial stream mount/unmount - stable, does NOT tear down on stream state changes
   useEffect(() => {
     if (enabled) {
       initStream();
-    } else {
-      stopStream();
     }
     return () => {
       stopStream();
     };
-  }, [enabled, initStream, stopStream]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
-  // Listen for device connect/disconnect changes
+  // Listen for device changes
   useEffect(() => {
     if (typeof window === "undefined" || !enabled) return;
 
@@ -194,46 +197,15 @@ export function useMediaStream(
     };
 
     navigator.mediaDevices?.addEventListener("devicechange", handleDeviceChange);
-
-    // If permission was previously blocked and user unlocks it in browser settings
-    let camStatus: PermissionStatus | null = null;
-    let micStatus: PermissionStatus | null = null;
-
-    const handlePermissionChange = () => {
-      if (permissionError) {
-        initStream();
-      }
-    };
-
-    if (navigator.permissions?.query) {
-      navigator.permissions
-        .query({ name: "camera" as PermissionName })
-        .then((status) => {
-          camStatus = status;
-          status.addEventListener("change", handlePermissionChange);
-        })
-        .catch(() => {});
-
-      navigator.permissions
-        .query({ name: "microphone" as PermissionName })
-        .then((status) => {
-          micStatus = status;
-          status.addEventListener("change", handlePermissionChange);
-        })
-        .catch(() => {});
-    }
-
     return () => {
       navigator.mediaDevices?.removeEventListener("devicechange", handleDeviceChange);
-      camStatus?.removeEventListener("change", handlePermissionChange);
-      micStatus?.removeEventListener("change", handlePermissionChange);
     };
-  }, [enabled, initStream, permissionError, refreshDevices]);
+  }, [enabled, refreshDevices]);
 
-  // Toggle Video: when stopping, call track.stop() to turn hardware off from system
+  // Toggle Video: turns hardware on/off at system level and updates UI state reliably
   const toggleVideo = useCallback(async () => {
-    if (isVideoEnabled) {
-      // Currently ON -> Turn OFF and release camera hardware from system
+    if (isVideoEnabledRef.current) {
+      // Currently ON -> Turn OFF and stop camera track
       if (streamRef.current) {
         streamRef.current.getVideoTracks().forEach((track) => {
           try {
@@ -245,7 +217,7 @@ export function useMediaStream(
       }
       setIsVideoEnabled(false);
     } else {
-      // Currently OFF -> Turn ON and acquire camera hardware (User click triggers native prompt if needed)
+      // Currently OFF -> Turn ON and acquire camera track
       try {
         setIsLoading(true);
         const newVideoStream = await navigator.mediaDevices.getUserMedia({
@@ -255,6 +227,11 @@ export function useMediaStream(
 
         if (newTrack) {
           if (streamRef.current) {
+            // Remove any old/dead video tracks first
+            streamRef.current.getVideoTracks().forEach((t) => {
+              try { t.stop(); } catch {}
+              streamRef.current?.removeTrack(t);
+            });
             streamRef.current.addTrack(newTrack);
             setStream(new MediaStream(streamRef.current.getTracks()));
           } else {
@@ -267,17 +244,18 @@ export function useMediaStream(
           await refreshDevices();
         }
       } catch (err: any) {
+        console.error("Failed to enable camera:", err);
         setPermissionError("Could not access camera. Please allow camera access in browser settings.");
       } finally {
         setIsLoading(false);
       }
     }
-  }, [isVideoEnabled, selectedVideoDevice, refreshDevices]);
+  }, [selectedVideoDevice, refreshDevices]);
 
-  // Toggle Audio: when muting, call track.stop() to turn microphone off from system
+  // Toggle Audio: turns microphone on/off at system level and updates UI state reliably
   const toggleAudio = useCallback(async () => {
-    if (isAudioEnabled) {
-      // Currently ON -> Turn OFF and release microphone hardware from system
+    if (isAudioEnabledRef.current) {
+      // Currently ON -> Turn OFF (Mute)
       if (streamRef.current) {
         streamRef.current.getAudioTracks().forEach((track) => {
           try {
@@ -289,7 +267,7 @@ export function useMediaStream(
       }
       setIsAudioEnabled(false);
     } else {
-      // Currently OFF -> Turn ON and acquire microphone hardware (User click triggers native prompt if needed)
+      // Currently OFF -> Turn ON (Unmute)
       try {
         setIsLoading(true);
         const newAudioStream = await navigator.mediaDevices.getUserMedia({
@@ -299,6 +277,11 @@ export function useMediaStream(
 
         if (newTrack) {
           if (streamRef.current) {
+            // Remove any old/dead audio tracks first
+            streamRef.current.getAudioTracks().forEach((t) => {
+              try { t.stop(); } catch {}
+              streamRef.current?.removeTrack(t);
+            });
             streamRef.current.addTrack(newTrack);
             setStream(new MediaStream(streamRef.current.getTracks()));
           } else {
@@ -311,16 +294,17 @@ export function useMediaStream(
           await refreshDevices();
         }
       } catch (err: any) {
+        console.error("Failed to enable microphone:", err);
         setPermissionError("Could not access microphone. Please allow microphone access in browser settings.");
       } finally {
         setIsLoading(false);
       }
     }
-  }, [isAudioEnabled, selectedAudioDevice, refreshDevices]);
+  }, [selectedAudioDevice, refreshDevices]);
 
   const setAudioState = useCallback(async (active: boolean) => {
     if (active) {
-      if (!isAudioEnabled) {
+      if (!isAudioEnabledRef.current) {
         try {
           const fresh = await navigator.mediaDevices.getUserMedia({
             audio: selectedAudioDevice ? { deviceId: { exact: selectedAudioDevice } } : true,
@@ -328,6 +312,10 @@ export function useMediaStream(
           const track = fresh.getAudioTracks()[0];
           if (track) {
             if (streamRef.current) {
+              streamRef.current.getAudioTracks().forEach((t) => {
+                try { t.stop(); } catch {}
+                streamRef.current?.removeTrack(t);
+              });
               streamRef.current.addTrack(track);
               setStream(new MediaStream(streamRef.current.getTracks()));
             } else {
@@ -353,11 +341,11 @@ export function useMediaStream(
       }
       setIsAudioEnabled(false);
     }
-  }, [isAudioEnabled, selectedAudioDevice]);
+  }, [selectedAudioDevice]);
 
   const setVideoState = useCallback(async (active: boolean) => {
     if (active) {
-      if (!isVideoEnabled) {
+      if (!isVideoEnabledRef.current) {
         try {
           const fresh = await navigator.mediaDevices.getUserMedia({
             video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice } } : true,
@@ -365,6 +353,10 @@ export function useMediaStream(
           const track = fresh.getVideoTracks()[0];
           if (track) {
             if (streamRef.current) {
+              streamRef.current.getVideoTracks().forEach((t) => {
+                try { t.stop(); } catch {}
+                streamRef.current?.removeTrack(t);
+              });
               streamRef.current.addTrack(track);
               setStream(new MediaStream(streamRef.current.getTracks()));
             } else {
@@ -390,7 +382,7 @@ export function useMediaStream(
       }
       setIsVideoEnabled(false);
     }
-  }, [isVideoEnabled, selectedVideoDevice]);
+  }, [selectedVideoDevice]);
 
   return {
     stream,

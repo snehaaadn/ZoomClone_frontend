@@ -93,15 +93,24 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     }
   }, [meetingIdParam, clientId, displayName]);
 
-  // Read initial audio/video preferences
-  const initialVideoPref =
-    typeof window !== "undefined"
-      ? sessionStorage.getItem("zoom_video_off") !== "true"
-      : true;
-  const initialAudioPref =
-    typeof window !== "undefined"
-      ? sessionStorage.getItem("zoom_audio_off") !== "true"
-      : true;
+  // Read initial audio/video preferences stably on mount
+  const [initialVideoPref] = useState(() => {
+    if (typeof window !== "undefined") {
+      const isOff = sessionStorage.getItem("zoom_video_off") === "true";
+      sessionStorage.removeItem("zoom_video_off");
+      return !isOff;
+    }
+    return true;
+  });
+
+  const [initialAudioPref] = useState(() => {
+    if (typeof window !== "undefined") {
+      const isOff = sessionStorage.getItem("zoom_audio_off") === "true";
+      sessionStorage.removeItem("zoom_audio_off");
+      return !isOff;
+    }
+    return true;
+  });
 
   // Local media stream hook
   const {
