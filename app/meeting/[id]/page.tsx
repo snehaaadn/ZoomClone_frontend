@@ -137,26 +137,14 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     stopLocalStream();
     stopScreenShare();
     stopAllGlobalMediaTracks();
-    if (localStream) {
-      localStream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch {}
-      });
-    }
-    if (screenStream) {
-      screenStream.getTracks().forEach((track) => {
-        try {
-          track.stop();
-        } catch {}
-      });
-    }
-  }, [stopLocalStream, stopScreenShare, localStream, screenStream]);
+  }, [stopLocalStream, stopScreenShare]);
 
-  // Clean up all media tracks when exiting the meeting room
+  // Clean up all media tracks when exiting the meeting room (unmount or navigation only)
   useEffect(() => {
     const handleExit = () => {
-      stopAllMediaTracks();
+      stopLocalStream();
+      stopScreenShare();
+      stopAllGlobalMediaTracks();
     };
 
     window.addEventListener("beforeunload", handleExit);
@@ -169,7 +157,8 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
       window.removeEventListener("pagehide", handleExit);
       window.removeEventListener("popstate", handleExit);
     };
-  }, [stopAllMediaTracks]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Callbacks for WebRTC signaling events
   const handleKicked = useCallback((reason: string) => {
