@@ -3,7 +3,7 @@
 import React, { useState, useEffect, use, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import { Meeting } from "@/types";
+import { Meeting, PeerStream } from "@/types";
 import { useMediaStream, stopAllGlobalMediaTracks } from "@/hooks/useMediaStream";
 import { useScreenShare } from "@/hooks/useScreenShare";
 import { useWebRTC } from "@/hooks/useWebRTC";
@@ -217,6 +217,8 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
     chatMessages,
     unreadChatCount,
     clearUnreadCount,
+    setPeerStreams,
+    syncPeers,
     sendChatMessage,
     broadcastMediaState,
     sendReaction,
@@ -238,6 +240,55 @@ export default function MeetingRoomPage({ params }: MeetingPageProps) {
       setTimeout(() => setActiveReaction(null), 3000);
     },
   });
+
+  // Periodic sync fallback: Poll meeting details every 4 seconds to guarantee participant list stays up to date
+  useEffect(() => {
+    if (!hasJoined) return;
+    const targetMeetingId = meeting?.meeting_id || meetingIdParam;
+    if (!targetMeetingId) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const updated = await api.getMeeting(targetMeetingId);
+        if (updated && Array.isArray(updated.participants)) {
+          setMeeting(updated);
+
+          // Find active participants in DB who are NOT the current user
+          const activeDbParticipants = updated.participants.filter(
+            (p) => p.status === "in_meeting" && p.client_id !== clientId
+          );
+
+          // Check if any active participants are missing from peerStreams
+          const missingPeers = activeDbParticipants.filter(
+            (p) => !peerStreams.some((ps) => ps.clientId === p.client_id)
+          );
+
+          if (missingPeers.length > 0) {
+            syncPeers();
+            setPeerStreams((prev) => {
+              const toAdd: PeerStream[] = [];
+              for (const p of missingPeers) {
+                if (!prev.some((ps) => ps.clientId === p.client_id)) {
+                  toAdd.push({
+                    clientId: p.client_id,
+                    displayName: p.display_name,
+                    stream: new MediaStream(),
+                    isMuted: p.is_muted,
+                    isVideoOff: !p.is_video_on,
+                  });
+                }
+              }
+              return toAdd.length > 0 ? [...prev, ...toAdd] : prev;
+            });
+          }
+        }
+      } catch (err) {
+        // Silent catch for background polling
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [hasJoined, meeting?.meeting_id, meetingIdParam, clientId, peerStreams, syncPeers, setPeerStreams]);
 
   // Broadcast local media track state when changed
   useEffect(() => {

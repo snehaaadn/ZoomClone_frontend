@@ -22,8 +22,10 @@ const ICE_SERVERS: RTCConfiguration = {
     { urls: "stun:stun2.l.google.com:19302" },
     { urls: "stun:stun3.l.google.com:19302" },
     { urls: "stun:stun4.l.google.com:19302" },
+    { urls: "stun:stun.services.mozilla.com" },
     { urls: "stun:global.stun.twilio.com:3478" },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 function getWebSocketUrl(meetingId: string, clientId: string, displayName: string): string {
@@ -88,6 +90,40 @@ export function useWebRTC({
   const wsRef = useRef<WebSocket | null>(null);
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const peerNames = useRef<Map<string, string>>(new Map());
+  const pendingIceCandidates = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+
+  // Helper to drain queued ICE candidates after remote description is set
+  const drainIceCandidates = useCallback(async (targetClientId: string, pc: RTCPeerConnection) => {
+    const queued = pendingIceCandidates.current.get(targetClientId);
+    if (queued && queued.length > 0) {
+      for (const cand of queued) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(cand));
+        } catch (err) {
+          console.warn("Error adding queued ICE candidate:", err);
+        }
+      }
+      pendingIceCandidates.current.delete(targetClientId);
+    }
+  }, []);
+
+  // Cleanup peer connection
+  const cleanUpPeer = useCallback((peerClientId: string) => {
+    const pc = peerConnections.current.get(peerClientId);
+    if (pc) {
+      try {
+        pc.close();
+      } catch {}
+      peerConnections.current.delete(peerClientId);
+    }
+    peerNames.current.delete(peerClientId);
+    pendingIceCandidates.current.delete(peerClientId);
+    setPeerStreams((prev) => prev.filter((p) => p.clientId !== peerClientId));
+  }, []);
 
   // Setup peer connection helper
   const createPeerConnection = useCallback(
@@ -100,29 +136,32 @@ export function useWebRTC({
       const pc = new RTCPeerConnection(ICE_SERVERS);
       peerConnections.current.set(targetClientId, pc);
 
-      // Pre-allocate audio & video transceivers so track replacing works smoothly
+      // Pre-allocate audio & video transceivers so track replacing works smoothly without renegotiation
+      let videoTransceiver: RTCRtpTransceiver | undefined;
+      let audioTransceiver: RTCRtpTransceiver | undefined;
       try {
         if (pc.addTransceiver) {
-          pc.addTransceiver("audio", { direction: "sendrecv" });
-          pc.addTransceiver("video", { direction: "sendrecv" });
+          audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+          videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
         }
       } catch {}
 
       // Add local stream tracks to the connection
       if (localStream) {
-        localStream.getTracks().forEach((track) => {
-          try {
-            const senders = pc.getSenders();
-            const sender = senders.find((s) => s.track?.kind === track.kind);
-            if (sender) {
-              sender.replaceTrack(track).catch(console.error);
-            } else {
-              pc.addTrack(track, localStream);
-            }
-          } catch {
-            pc.addTrack(track, localStream);
-          }
-        });
+        const liveVideoTrack = localStream.getVideoTracks().find((t) => t.readyState === "live") || null;
+        const liveAudioTrack = localStream.getAudioTracks().find((t) => t.readyState === "live") || null;
+
+        if (videoTransceiver && liveVideoTrack) {
+          videoTransceiver.sender.replaceTrack(liveVideoTrack).catch(console.error);
+        } else if (liveVideoTrack) {
+          try { pc.addTrack(liveVideoTrack, localStream); } catch {}
+        }
+
+        if (audioTransceiver && liveAudioTrack) {
+          audioTransceiver.sender.replaceTrack(liveAudioTrack).catch(console.error);
+        } else if (liveAudioTrack) {
+          try { pc.addTrack(liveAudioTrack, localStream); } catch {}
+        }
       }
 
       // Handle ICE candidates
@@ -140,31 +179,40 @@ export function useWebRTC({
 
       // Handle incoming remote stream tracks
       pc.ontrack = (event) => {
-        const [remoteStream] = event.streams;
-        const incomingStream = remoteStream || new MediaStream([event.track]);
+        const incomingStream = event.streams[0] || new MediaStream();
+        if (!event.streams[0]) {
+          incomingStream.addTrack(event.track);
+        }
+
         setPeerStreams((prev) => {
-          const existingIndex = prev.findIndex((p) => p.clientId === targetClientId);
+          const existing = prev.find((p) => p.clientId === targetClientId);
+          if (existing && existing.stream) {
+            const currentTracks = existing.stream.getTracks();
+            if (!currentTracks.some((t) => t.id === event.track.id)) {
+              existing.stream.addTrack(event.track);
+            }
+            return prev.map((p) =>
+              p.clientId === targetClientId
+                ? {
+                    ...p,
+                    displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
+                    stream: new MediaStream(existing.stream.getTracks()),
+                  }
+                : p
+            );
+          }
+
           const peerData: PeerStream = {
             clientId: targetClientId,
             displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
             stream: incomingStream,
           };
-
-          if (existingIndex >= 0) {
-            const updated = [...prev];
-            updated[existingIndex] = {
-              ...updated[existingIndex],
-              displayName: peerNames.current.get(targetClientId) || targetDisplayName || "Participant",
-              stream: incomingStream,
-            };
-            return updated;
-          }
           return [...prev, peerData];
         });
       };
 
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "closed") {
+        if (pc.connectionState === "closed" || pc.connectionState === "failed") {
           cleanUpPeer(targetClientId);
         }
       };
@@ -189,18 +237,8 @@ export function useWebRTC({
 
       return pc;
     },
-    [localStream]
+    [localStream, cleanUpPeer]
   );
-
-  const cleanUpPeer = useCallback((peerClientId: string) => {
-    const pc = peerConnections.current.get(peerClientId);
-    if (pc) {
-      pc.close();
-      peerConnections.current.delete(peerClientId);
-    }
-    peerNames.current.delete(peerClientId);
-    setPeerStreams((prev) => prev.filter((p) => p.clientId !== peerClientId));
-  }, []);
 
   // Update tracks when localStream changes (e.g. mic/cam toggle)
   useEffect(() => {
@@ -209,163 +247,243 @@ export function useWebRTC({
       const liveVideoTrack = localStream?.getVideoTracks().find((t) => t.readyState === "live") || null;
       const liveAudioTrack = localStream?.getAudioTracks().find((t) => t.readyState === "live") || null;
 
-      const videoSender = senders.find((s) => s.track?.kind === "video");
-      const audioSender = senders.find((s) => s.track?.kind === "audio");
+      const transceivers = pc.getTransceivers ? pc.getTransceivers() : [];
+      const videoTransceiver = transceivers.find((t) => t.receiver.track.kind === "video");
+      const audioTransceiver = transceivers.find((t) => t.receiver.track.kind === "audio");
+
+      const videoSender = videoTransceiver?.sender || senders.find((s) => s.track?.kind === "video");
+      const audioSender = audioTransceiver?.sender || senders.find((s) => s.track?.kind === "audio");
 
       if (videoSender) {
         videoSender.replaceTrack(liveVideoTrack).catch(console.error);
       } else if (liveVideoTrack && localStream) {
-        pc.addTrack(liveVideoTrack, localStream);
+        try { pc.addTrack(liveVideoTrack, localStream); } catch {}
       }
 
       if (audioSender) {
         audioSender.replaceTrack(liveAudioTrack).catch(console.error);
       } else if (liveAudioTrack && localStream) {
-        pc.addTrack(liveAudioTrack, localStream);
+        try { pc.addTrack(liveAudioTrack, localStream); } catch {}
       }
     });
   }, [localStream]);
 
-  // Connect WebSocket
+  // Request room peers sync from backend signaling
+  const syncPeers = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: "sync-room" }));
+    }
+  }, []);
+
+  // Connect WebSocket with heartbeat ping and auto-reconnect
   useEffect(() => {
+    isMountedRef.current = true;
     if (!enabled || !meetingId || !clientId || !displayName) return;
 
-    const wsUrl = getWebSocketUrl(meetingId, clientId, displayName);
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
+    const connectWebSocket = () => {
+      if (!isMountedRef.current) return;
 
-    ws.onopen = () => {
-      setIsConnected(true);
-    };
+      const wsUrl = getWebSocketUrl(meetingId, clientId, displayName);
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onerror = (err) => {
-      console.warn("Signaling WebSocket connection error:", err);
-    };
+      ws.onopen = () => {
+        if (!isMountedRef.current) return;
+        setIsConnected(true);
 
-    ws.onmessage = async (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        const { type } = data;
-
-        if (type === "room-state") {
-          // Connected: initiate connections with all existing peers
-          const { peers } = data;
-          if (Array.isArray(peers)) {
-            peers.forEach((peer: { clientId: string; displayName: string; isMuted?: boolean; isVideoOff?: boolean }) => {
-              peerNames.current.set(peer.clientId, peer.displayName);
-              setPeerStreams((prev) => {
-                if (prev.some((p) => p.clientId === peer.clientId)) return prev;
-                return [
-                  ...prev,
-                  {
-                    clientId: peer.clientId,
-                    displayName: peer.displayName,
-                    stream: new MediaStream(),
-                    isMuted: peer.isMuted,
-                    isVideoOff: peer.isVideoOff,
-                  },
-                ];
-              });
-              createPeerConnection(peer.clientId, peer.displayName, true);
-            });
-          }
-        } else if (type === "peer-joined") {
-          // Another peer joined. Register immediately in peerStreams so UI shows both participants
-          peerNames.current.set(data.clientId, data.displayName);
-          setPeerStreams((prev) => {
-            if (prev.some((p) => p.clientId === data.clientId)) return prev;
-            return [
-              ...prev,
-              {
-                clientId: data.clientId,
-                displayName: data.displayName,
-                stream: new MediaStream(),
-                isMuted: data.isMuted,
-                isVideoOff: data.isVideoOff,
-              },
-            ];
-          });
-        }
- else if (type === "peer-left") {
-          cleanUpPeer(data.clientId);
-        } else if (type === "offer") {
-          const pc = createPeerConnection(data.sender, peerNames.current.get(data.sender) || "Peer", false);
-          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
+        // Start 20-second heartbeat to prevent Render from dropping idle connection (55s limit)
+        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                type: "answer",
-                target: data.sender,
-                sdp: pc.localDescription,
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 20000);
+      };
+
+      ws.onerror = (err) => {
+        console.warn("Signaling WebSocket connection error:", err);
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const { type } = data;
+
+          if (type === "pong") {
+            // Heartbeat response from server
+            return;
+          }
+
+          if (type === "room-state") {
+            // Connected/Reconnected: register and connect with all existing peers
+            const { peers } = data;
+            if (Array.isArray(peers)) {
+              peers.forEach((peer: { clientId: string; displayName: string; isMuted?: boolean; isVideoOff?: boolean }) => {
+                peerNames.current.set(peer.clientId, peer.displayName);
+                setPeerStreams((prev) => {
+                  if (prev.some((p) => p.clientId === peer.clientId)) {
+                    return prev.map((p) =>
+                      p.clientId === peer.clientId
+                        ? { ...p, displayName: peer.displayName, isMuted: peer.isMuted, isVideoOff: peer.isVideoOff }
+                        : p
+                    );
+                  }
+                  return [
+                    ...prev,
+                    {
+                      clientId: peer.clientId,
+                      displayName: peer.displayName,
+                      stream: new MediaStream(),
+                      isMuted: peer.isMuted,
+                      isVideoOff: peer.isVideoOff,
+                    },
+                  ];
+                });
+                createPeerConnection(peer.clientId, peer.displayName, true);
+              });
+            }
+          } else if (type === "peer-joined") {
+            // Another peer joined. Register immediately in peerStreams so UI shows both participants
+            peerNames.current.set(data.clientId, data.displayName);
+            setPeerStreams((prev) => {
+              if (prev.some((p) => p.clientId === data.clientId)) {
+                return prev.map((p) =>
+                  p.clientId === data.clientId
+                    ? { ...p, displayName: data.displayName, isMuted: data.isMuted, isVideoOff: data.isVideoOff }
+                    : p
+                );
+              }
+              return [
+                ...prev,
+                {
+                  clientId: data.clientId,
+                  displayName: data.displayName,
+                  stream: new MediaStream(),
+                  isMuted: data.isMuted,
+                  isVideoOff: data.isVideoOff,
+                },
+              ];
+            });
+            // Ensure connection initiated if not already
+            createPeerConnection(data.clientId, data.displayName, true);
+          } else if (type === "peer-left") {
+            cleanUpPeer(data.clientId);
+          } else if (type === "offer") {
+            const pc = createPeerConnection(data.sender, peerNames.current.get(data.sender) || "Peer", false);
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            await drainIceCandidates(data.sender, pc);
+
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: "answer",
+                  target: data.sender,
+                  sdp: pc.localDescription,
+                })
+              );
+            }
+          } else if (type === "answer") {
+            const pc = peerConnections.current.get(data.sender);
+            if (pc) {
+              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+              await drainIceCandidates(data.sender, pc);
+            }
+          } else if (type === "ice-candidate") {
+            const pc = peerConnections.current.get(data.sender);
+            if (pc && data.candidate) {
+              if (pc.remoteDescription && pc.remoteDescription.type) {
+                await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
+              } else {
+                if (!pendingIceCandidates.current.has(data.sender)) {
+                  pendingIceCandidates.current.set(data.sender, []);
+                }
+                pendingIceCandidates.current.get(data.sender)!.push(data.candidate);
+              }
+            }
+          } else if (type === "chat-message") {
+            const newMsg: ChatMessage = {
+              id: `${Date.now()}-${Math.random()}`,
+              sender: data.sender,
+              displayName: data.displayName,
+              text: data.text,
+              timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+              isSelf: data.sender === clientId,
+            };
+            setChatMessages((prev) => [...prev, newMsg]);
+            if (data.sender !== clientId) {
+              setUnreadChatCount((prev) => prev + 1);
+            }
+          } else if (type === "reaction") {
+            onReactionReceived?.(data.emoji, data.displayName || "Participant");
+          } else if (type === "mute-all") {
+            onMuteRequested?.();
+          } else if (type === "removed-by-host") {
+            onKicked?.(data.message || "Removed by host.");
+          } else if (type === "meeting-ended") {
+            onMeetingEnded?.(data.message || "Meeting ended by host.");
+          } else if (type === "media-state") {
+            setPeerStreams((prev) =>
+              prev.map((p) => {
+                if (p.clientId === data.sender) {
+                  return {
+                    ...p,
+                    isMuted: data.audio === false,
+                    isVideoOff: data.video === false,
+                  };
+                }
+                return p;
               })
             );
           }
-        } else if (type === "answer") {
-          const pc = peerConnections.current.get(data.sender);
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-          }
-        } else if (type === "ice-candidate") {
-          const pc = peerConnections.current.get(data.sender);
-          if (pc && data.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate)).catch(console.error);
-          }
-        } else if (type === "chat-message") {
-          const newMsg: ChatMessage = {
-            id: `${Date.now()}-${Math.random()}`,
-            sender: data.sender,
-            displayName: data.displayName,
-            text: data.text,
-            timestamp: data.timestamp || new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-            isSelf: data.sender === clientId,
-          };
-          setChatMessages((prev) => [...prev, newMsg]);
-          if (data.sender !== clientId) {
-            setUnreadChatCount((prev) => prev + 1);
-          }
-        } else if (type === "reaction") {
-          onReactionReceived?.(data.emoji, data.displayName || "Participant");
-        } else if (type === "mute-all") {
-          onMuteRequested?.();
-        } else if (type === "removed-by-host") {
-          onKicked?.(data.message || "Removed by host.");
-        } else if (type === "meeting-ended") {
-          onMeetingEnded?.(data.message || "Meeting ended by host.");
-        } else if (type === "media-state") {
-          setPeerStreams((prev) =>
-            prev.map((p) => {
-              if (p.clientId === data.sender) {
-                return {
-                  ...p,
-                  isMuted: data.audio === false,
-                  isVideoOff: data.video === false,
-                };
-              }
-              return p;
-            })
-          );
+        } catch (err) {
+          console.error("Signaling error:", err);
         }
-      } catch (err) {
-        console.error("Signaling error:", err);
-      }
+      };
+
+      ws.onclose = () => {
+        setIsConnected(false);
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+
+        // Auto-reconnect after 2.5s if component is still mounted and enabled
+        if (isMountedRef.current && enabled) {
+          if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket();
+          }, 2500);
+        }
+      };
     };
 
-    ws.onclose = () => {
-      setIsConnected(false);
-    };
+    connectWebSocket();
 
     return () => {
-      peerConnections.current.forEach((pc) => pc.close());
+      isMountedRef.current = false;
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      peerConnections.current.forEach((pc) => {
+        try { pc.close(); } catch {}
+      });
       peerConnections.current.clear();
       peerNames.current.clear();
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-        ws.close();
+      pendingIceCandidates.current.clear();
+
+      if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+        wsRef.current.close();
       }
     };
-  }, [meetingId, clientId, displayName, createPeerConnection, cleanUpPeer, onKicked, onMeetingEnded, onMuteRequested, onReactionReceived]);
+  }, [meetingId, clientId, displayName, enabled, createPeerConnection, cleanUpPeer, drainIceCandidates, onKicked, onMeetingEnded, onMuteRequested, onReactionReceived]);
 
   const sendChatMessage = useCallback(
     (text: string) => {
@@ -445,6 +563,7 @@ export function useWebRTC({
 
   return {
     peerStreams,
+    setPeerStreams,
     chatMessages,
     isConnected,
     unreadChatCount,
@@ -456,5 +575,6 @@ export function useWebRTC({
     sendMuteAll,
     removePeer,
     endMeetingForEveryone,
+    syncPeers,
   };
 }
